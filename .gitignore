@@ -1,0 +1,27 @@
+.env
+.env.local
+.env.production
+.env.*.local
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+dist/
+.cache/
+data_cache/
+logs/
+frontend_legacy/
+frontend/api/
+frontend/dist/
+*.log
+*.db
+*.sqlite3
+.DS_Store
+Thumbs.db
+*.gguf
+repomix-output.xml
+Prompt*.txt
+QuantMind_Pro_MASTER_v3.0.txt
+Untitled-1.md
+OpenClaude activation.txt

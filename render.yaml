@@ -1,0 +1,107 @@
+services:
+  # ---------------------------------------------------------------------------
+  # FastAPI Web Server (Backend API)
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: numeris-backend
+    env: docker
+    dockerfilePath: Dockerfile
+    plan: starter # Starter plan or higher is required for persistent disks on Render
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: numeris-redis
+          property: connectionString
+      - key: SQLITE_DB_PATH
+        value: /app/data_cache/numeris.db
+      - key: CHROMA_PERSIST_DIR
+        value: /app/data_cache/chroma
+      - key: PARQUET_CACHE_DIR
+        value: /app/data_cache/parquet
+      # CRITICAL AI KEYS (User will need to set these in the Render dashboard)
+      - key: GROQ_API_KEY
+        sync: false
+      - key: MISTRAL_API_KEY
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: ALPHA_VANTAGE_KEY
+        sync: false
+      - key: NEWS_API_KEY
+        sync: false
+      - key: ENCRYPTION_SECRET_KEY
+        sync: false
+      - key: APP_SECRET_KEY
+        sync: false
+      # SUPABASE KEYS (For private access system)
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+    disk:
+      name: numeris-data-volume
+      mountPath: /app/data_cache
+      sizeGB: 10 # Mounts the persistent disk to keep the SQLite database and Chroma index safe
+
+  # ---------------------------------------------------------------------------
+  # Celery Background Worker
+  # ---------------------------------------------------------------------------
+  - type: worker
+    name: numeris-worker
+    env: docker
+    dockerfilePath: Dockerfile
+    dockerCommand: celery -A backend.core.celery_app worker --loglevel=info -P solo
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: numeris-redis
+          property: connectionString
+      - key: SQLITE_DB_PATH
+        value: /app/data_cache/numeris.db
+      - key: CHROMA_PERSIST_DIR
+        value: /app/data_cache/chroma
+      - key: PARQUET_CACHE_DIR
+        value: /app/data_cache/parquet
+      - key: GROQ_API_KEY
+        sync: false
+      - key: MISTRAL_API_KEY
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: ALPHA_VANTAGE_KEY
+        sync: false
+      - key: NEWS_API_KEY
+        sync: false
+      - key: ENCRYPTION_SECRET_KEY
+        sync: false
+      - key: APP_SECRET_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+    disk:
+      name: numeris-data-volume
+      mountPath: /app/data_cache
+      sizeGB: 10 # Shares or uses the same disk definition
+
+  # ---------------------------------------------------------------------------
+  # Redis Instance (Broker for Celery and caching)
+  # ---------------------------------------------------------------------------
+  - type: redis
+    name: numeris-redis
+    ipAllowList: [] # Only allow internal traffic from within the Render private network
