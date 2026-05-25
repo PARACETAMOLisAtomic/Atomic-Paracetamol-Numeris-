@@ -50,6 +50,7 @@ async def bootstrap_access_system():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
     logger.info("Starting up Numeris backend...")
     os.makedirs("./data_cache", exist_ok=True)
     
@@ -63,8 +64,12 @@ async def lifespan(app: FastAPI):
     # Bootstrap private access system
     await bootstrap_access_system()
     
+    # Start periodic tasks scheduler
+    scheduler_task = asyncio.create_task(run_periodic_tasks())
+    
     yield
     logger.info("Shutting down Numeris backend...")
+    scheduler_task.cancel()
 
 app = FastAPI(title="Numeris API", version="3.0", lifespan=lifespan)
 
@@ -118,7 +123,6 @@ async def health_check():
         "platform": "Numeris",
         "services": {
             "db": "connected",
-            "redis": "connected",
             "chroma": "connected",
             "model_router": "connected"
         }
@@ -127,3 +131,92 @@ async def health_check():
 @app.get("/api/status")
 async def api_status():
     return {"status": "ok", "platform": "Numeris", "api_usage": {}}
+
+async def run_periodic_tasks():
+    import asyncio
+    from backend.data.market_data import update_parquet_cache
+    from backend.utils.cache import invalidate_cache
+    from backend.db.chroma_init import delete_old_embeddings
+    
+    async def run_market_data_update():
+        try:
+            logger.info("Scheduled task: update_market_data starting")
+            await update_parquet_cache()
+            logger.info("Scheduled task: update_market_data completed")
+        except Exception as e:
+            logger.error(f"Scheduled task update_market_data failed: {e}")
+
+    async def run_cleanup():
+        try:
+            logger.info("Scheduled task: cleanup_cache starting")
+            # Run sync cache purge in executor to avoid blocking event loop
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: invalidate_cache("__expired__"))
+            
+            collections = ["stock_embeddings", "news_embeddings", "sentiment_embeddings",
+                           "user_query_memory", "chat_memory"]
+            for col in collections:
+                await delete_old_embeddings(col, days_old=60)
+            logger.info("Scheduled task: cleanup_cache completed")
+        except Exception as e:
+            logger.error(f"Scheduled task cleanup_cache failed: {e}")
+
+    async def run_check_alerts():
+        try:
+            logger.info("Scheduled task: check_alerts starting")
+            from backend.db.database import get_db_session
+            from backend.db.models import Watchlist
+            from backend.data.market_data import fetch_stock_data
+            from sqlalchemy import select
+            
+            async with get_db_session() as session:
+                rows = (await session.execute(select(Watchlist))).scalars().all()
+                for watchlist in rows:
+                    symbols: list = watchlist.stock_symbols_json or []
+                    alerts: dict = watchlist.alerts_config_json or {}
+                    for symbol in symbols:
+                        config = alerts.get(symbol, {})
+                        if not config:
+                            continue
+                        try:
+                            df = await fetch_stock_data(symbol, "NSE", "5d", "1d")
+                            if df is None or df.empty:
+                                continue
+                            current_price = float(df["Close"].iloc[-1])
+                            if config.get("price_above") and current_price >= config["price_above"]:
+                                logger.info(
+                                    "ALERT: Price above threshold",
+                                    extra={"symbol": symbol, "price": current_price, "threshold": config["price_above"]},
+                                )
+                            if config.get("price_below") and current_price <= config["price_below"]:
+                                logger.info(
+                                    "ALERT: Price below threshold",
+                                    extra={"symbol": symbol, "price": current_price, "threshold": config["price_below"]},
+                                )
+                        except Exception as exc:
+                            logger.debug(f"Alert check failed for symbol {symbol}: {exc}")
+            logger.info("Scheduled task: check_alerts completed")
+        except Exception as e:
+            logger.error(f"Scheduled task check_alerts failed: {e}")
+
+    logger.info("Background periodic tasks scheduler started")
+    count = 0
+    while True:
+        try:
+            # Check alerts every 5 minutes
+            if count % 5 == 0:
+                asyncio.create_task(run_check_alerts())
+            # Update market data every 30 minutes
+            if count % 30 == 0:
+                asyncio.create_task(run_market_data_update())
+            # Clean up cache every 24 hours (1440 minutes)
+            if count % 1440 == 0:
+                asyncio.create_task(run_cleanup())
+                
+            count += 1
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Error in periodic task scheduler loop: {e}")
+            await asyncio.sleep(60)
